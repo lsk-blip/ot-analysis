@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { unmaskData } from "@/lib/masking"
 
 type Classification = { ot_type: string; confidence: string; reasoning: string }
@@ -13,13 +13,48 @@ type AnalysisResult = {
   original_text: string
 }
 
+type MarketArticle = {
+  title: string
+  description: string
+  link: string
+  publisher_link?: string
+}
+
+type MarketResult = {
+  articles: MarketArticle[]
+  summary_data: any
+  keyword: string
+}
+
 export default function Page() {
   const [otText, setOtText] = useState("")
   const [aeIntel, setAeIntel] = useState("")
+  const [filename, setFilename] = useState("")
+  const [uploading, setUploading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [activeTab, setActiveTab] = useState<"ot" | "brief" | "factbook">("brief")
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  async function handleFile(file: File) {
+    setError(null)
+    setUploading(true)
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      const res = await fetch("/api/extract", { method: "POST", body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || "파일 추출 실패")
+      setOtText(data.text || "")
+      setFilename(data.filename || file.name)
+    } catch (e: any) {
+      setError(e?.message || "파일 처리 중 오류")
+    } finally {
+      setUploading(false)
+    }
+  }
 
   async function runAnalysis() {
     if (!otText.trim()) {
@@ -39,7 +74,7 @@ export default function Page() {
       setResult(data)
       setActiveTab("brief")
     } catch (e: any) {
-      setError(e?.message || "분석 중 오류 발생")
+      setError(e?.message || "분석 중 오류")
     } finally {
       setLoading(false)
     }
@@ -52,8 +87,23 @@ export default function Page() {
         setOtText={setOtText}
         aeIntel={aeIntel}
         setAeIntel={setAeIntel}
+        filename={filename}
+        uploading={uploading}
         loading={loading}
         onRun={runAnalysis}
+        onPickFile={() => fileInputRef.current?.click()}
+      />
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.docx,.txt,.md"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) handleFile(f)
+          e.target.value = ""
+        }}
       />
 
       <main className="flex-1 px-12 py-12 max-w-5xl">
@@ -80,27 +130,44 @@ function Sidebar({
   setOtText,
   aeIntel,
   setAeIntel,
+  filename,
+  uploading,
   loading,
   onRun,
+  onPickFile,
 }: {
   otText: string
   setOtText: (v: string) => void
   aeIntel: string
   setAeIntel: (v: string) => void
+  filename: string
+  uploading: boolean
   loading: boolean
   onRun: () => void
+  onPickFile: () => void
 }) {
   return (
     <aside className="w-[340px] bg-gray-50 border-r border-gray-100 p-6 flex flex-col gap-6 sticky top-0 h-screen overflow-y-auto scrollbar-thin">
       <div>
         <div className="text-[11px] font-bold text-gray-900 uppercase tracking-[0.08em] mb-3">
-          광고주 OT 본문
+          광고주 OT 파일
         </div>
+        <p className="text-xs text-gray-500 leading-relaxed mb-3">
+          PDF · DOCX · TXT 업로드 또는 직접 붙여넣기
+        </p>
+        <button
+          type="button"
+          onClick={onPickFile}
+          disabled={uploading}
+          className="w-full mb-3 border border-dashed border-gray-300 rounded-xl py-3 text-sm text-gray-600 hover:border-gray-500 hover:bg-white transition-colors disabled:opacity-50"
+        >
+          {uploading ? "파일 처리 중..." : filename ? `📄 ${filename}` : "파일 선택 또는 드래그"}
+        </button>
         <textarea
           value={otText}
           onChange={(e) => setOtText(e.target.value)}
-          placeholder="광고주 OT의 본문을 그대로 붙여넣으세요"
-          rows={12}
+          placeholder="또는 OT 본문을 직접 붙여넣기"
+          rows={8}
           className="w-full text-sm border border-gray-200 rounded-xl p-3 text-gray-900 bg-white focus:border-accent focus:ring-2 focus:ring-accent-soft focus:outline-none resize-y"
         />
       </div>
@@ -116,7 +183,7 @@ function Sidebar({
           value={aeIntel}
           onChange={(e) => setAeIntel(e.target.value)}
           placeholder="예) 광고주 미팅 회의록&#10;- 사장님 디지털 강조&#10;- 6월 1차 시안 PT 일정"
-          rows={6}
+          rows={5}
           className="w-full text-sm border border-gray-200 rounded-xl p-3 text-gray-900 bg-white focus:border-accent focus:ring-2 focus:ring-accent-soft focus:outline-none resize-y"
         />
       </div>
@@ -142,7 +209,7 @@ function Landing() {
         광고주 OT를 분석합니다
       </h1>
       <p className="text-gray-500 text-base leading-relaxed max-w-md mx-auto">
-        좌측에서 광고주 OT 본문을 입력하고 분석 시작을 누르세요.
+        좌측에서 OT 파일을 업로드하거나 본문을 입력하고 분석 시작을 누르세요.
       </p>
     </div>
   )
@@ -180,7 +247,6 @@ function Dashboard({
         {campaign}
       </h1>
 
-      {/* Tabs */}
       <div className="flex border-b border-gray-200 mb-10">
         {[
           { key: "ot" as const, label: "광고주 OT 문서" },
@@ -202,8 +268,8 @@ function Dashboard({
       </div>
 
       {activeTab === "ot" && <OtDocTab result={result} />}
-      {activeTab === "brief" && <BriefTab ref={ref} interp={interp} />}
-      {activeTab === "factbook" && <FactbookTab />}
+      {activeTab === "brief" && <BriefTab refData={ref} interp={interp} />}
+      {activeTab === "factbook" && <FactbookTab refData={ref} />}
     </div>
   )
 }
@@ -275,7 +341,7 @@ const REFERENCE_FIELDS: { key: string; label: string }[] = [
   { key: "timeline", label: "캠페인 타임라인" },
 ]
 
-function BriefTab({ ref, interp }: { ref: any; interp: any }) {
+function BriefTab({ refData, interp }: { refData: any; interp: any }) {
   const insights = (interp?.insights as any[]) || []
   const rfi = (interp?.rfi as string[]) || []
 
@@ -292,7 +358,6 @@ function BriefTab({ ref, interp }: { ref: any; interp: any }) {
 
   return (
     <div>
-      {/* 1. OT 브리프 */}
       <SectionHeader
         eyebrow="BRIEF"
         title="OT 브리프"
@@ -300,18 +365,17 @@ function BriefTab({ ref, interp }: { ref: any; interp: any }) {
       />
       <div>
         {REFERENCE_FIELDS.map(({ key, label }) => (
-          <Field key={key} label={label} value={ref?.[key]} />
+          <Field key={key} label={label} value={refData?.[key]} />
         ))}
-        {ref?.competition_pt && typeof ref.competition_pt === "object" && (
+        {refData?.competition_pt && typeof refData.competition_pt === "object" && (
           <>
-            <Field label="PT 일정" value={ref.competition_pt.pt_schedule} />
-            <Field label="PT 제출물" value={ref.competition_pt.deliverables} />
-            <Field label="PT 평가" value={ref.competition_pt.evaluation} />
+            <Field label="PT 일정" value={refData.competition_pt.pt_schedule} />
+            <Field label="PT 제출물" value={refData.competition_pt.deliverables} />
+            <Field label="PT 평가" value={refData.competition_pt.evaluation} />
           </>
         )}
       </div>
 
-      {/* 2. 해석 */}
       {insights.length > 0 && (
         <>
           <SectionHeader
@@ -326,7 +390,6 @@ function BriefTab({ ref, interp }: { ref: any; interp: any }) {
         </>
       )}
 
-      {/* 3. RFI */}
       {rfi.length > 0 && (
         <>
           <SectionHeader
@@ -362,6 +425,192 @@ function normalizeCategory(cat: string): string {
   return "시장 시그널"
 }
 
+// ─── Tab: 팩트북 (시장 카드) ─────────────────────────────
+
+function FactbookTab({ refData }: { refData: any }) {
+  const suggestedKeyword = useMemo(() => {
+    if (refData?.competitors?.length) {
+      return `${refData.competitors[0]} 시장`
+    }
+    if (typeof refData?.brand_status === "string") {
+      return refData.brand_status.split("\n")[0].split(".")[0].slice(0, 30)
+    }
+    return ""
+  }, [refData])
+
+  const [keyword, setKeyword] = useState(suggestedKeyword)
+  const [display, setDisplay] = useState(20)
+  const [sort, setSort] = useState<"sim" | "date">("sim")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [marketResult, setMarketResult] = useState<MarketResult | null>(null)
+
+  async function runMarket() {
+    if (!keyword.trim()) {
+      setError("검색 키워드를 입력해주세요.")
+      return
+    }
+    setError(null)
+    setLoading(true)
+    try {
+      const res = await fetch("/api/market", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword, display, sort }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || "시장 조사 실패")
+      setMarketResult(data)
+    } catch (e: any) {
+      setError(e?.message || "시장 조사 중 오류")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div>
+      <SectionHeader
+        eyebrow="MARKET"
+        title="시장"
+        desc="네이버 뉴스 검색 결과를 AI가 요약합니다. 광고주의 카테고리·트렌드 키워드를 입력하세요."
+      />
+
+      {/* 입력 폼 */}
+      <div className="flex gap-3 mb-4">
+        <input
+          type="text"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="예) 어묵 시장 트렌드, F&B 외식 리뉴얼"
+          className="flex-1 text-sm border border-gray-200 rounded-xl px-4 py-3 text-gray-900 bg-white focus:border-accent focus:ring-2 focus:ring-accent-soft focus:outline-none"
+        />
+        <select
+          value={display}
+          onChange={(e) => setDisplay(Number(e.target.value))}
+          className="text-sm border border-gray-200 rounded-xl px-3 py-3 text-gray-900 bg-white focus:border-accent focus:outline-none"
+        >
+          <option value={10}>10건</option>
+          <option value={20}>20건</option>
+          <option value={30}>30건</option>
+          <option value={50}>50건</option>
+        </select>
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as "sim" | "date")}
+          className="text-sm border border-gray-200 rounded-xl px-3 py-3 text-gray-900 bg-white focus:border-accent focus:outline-none"
+        >
+          <option value="sim">정확도순</option>
+          <option value="date">최신순</option>
+        </select>
+      </div>
+
+      <button
+        onClick={runMarket}
+        disabled={loading || !keyword.trim()}
+        className="bg-gray-900 hover:bg-black disabled:bg-gray-200 disabled:text-gray-400 text-white font-semibold px-5 py-3 rounded-xl text-sm transition-colors"
+      >
+        {loading ? "조사 중..." : "시장 조사 실행"}
+      </button>
+
+      {error && (
+        <div className="bg-red-50 text-red-700 p-4 rounded-xl mt-6 text-sm whitespace-pre-wrap">
+          {error}
+        </div>
+      )}
+
+      {/* 결과 */}
+      {marketResult?.summary_data && (
+        <div className="mt-10">
+          <div className="pb-8 border-b border-gray-100 mb-6">
+            <div className="text-[11px] font-bold text-gray-400 uppercase tracking-[0.12em] mb-3">
+              AI 요약
+            </div>
+            <p className="text-[17px] text-gray-900 leading-[1.75]">
+              {marketResult.summary_data.summary}
+            </p>
+            {marketResult.summary_data.key_keywords?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-5">
+                {marketResult.summary_data.key_keywords.map((k: string, i: number) => (
+                  <span
+                    key={i}
+                    className="inline-block px-3 py-1 bg-gray-50 text-gray-700 rounded-md text-[13px] font-medium"
+                  >
+                    {k}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {marketResult.summary_data.trends?.length > 0 && (
+            <>
+              <h5 className="text-base font-bold text-gray-900 mb-3">트렌드</h5>
+              <div>
+                {marketResult.summary_data.trends.map((t: any, i: number) => (
+                  <div
+                    key={i}
+                    className="py-5 border-b border-gray-100 last:border-none"
+                  >
+                    <p className="text-[16px] font-semibold text-gray-900 leading-[1.55] mb-2">
+                      {t.trend}
+                    </p>
+                    <p className="text-[14.5px] text-gray-600 leading-[1.65] mb-3">
+                      {t.implication}
+                    </p>
+                    {t.source_indices?.length > 0 && (
+                      <span className="text-[11px] font-semibold text-gray-400">
+                        출처 ·{" "}
+                        {t.source_indices
+                          .map((idx: number) => `#${String(idx).padStart(2, "0")}`)
+                          .join(" · ")}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {marketResult?.articles?.length > 0 && (
+        <div className="mt-10">
+          <h5 className="text-base font-bold text-gray-900 mb-3">
+            검색 결과 · {marketResult.articles.length}건
+          </h5>
+          {marketResult.articles.map((a, i) => (
+            <a
+              key={i}
+              href={a.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block py-5 border-b border-gray-100 last:border-none hover:bg-gray-50 -mx-2 px-2 rounded-md transition-colors"
+            >
+              <div className="flex items-center gap-3 mb-1">
+                <span className="text-[11px] font-semibold text-gray-400 tabular-nums">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <span className="text-xs text-gray-500 truncate">
+                  {a.publisher_link}
+                </span>
+              </div>
+              <div className="text-[15px] font-semibold text-gray-900 leading-[1.5] mb-1">
+                {a.title}
+              </div>
+              <div className="text-[13px] text-gray-500 leading-[1.65]">
+                {a.description}
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── 공통 컴포넌트 ───────────────────────────────────────
+
 function SectionHeader({
   eyebrow,
   title,
@@ -395,7 +644,7 @@ function Field({ label, value }: { label: string; value: any }) {
     (Array.isArray(value) && value.length === 0) ||
     (typeof value === "object" &&
       !Array.isArray(value) &&
-      Object.values(value).every((v) => !v))
+      Object.values(value as Record<string, any>).every((v: any) => !v))
 
   return (
     <div className="grid grid-cols-[180px_1fr] gap-10 py-5 border-b border-gray-100 last:border-none">
@@ -405,7 +654,7 @@ function Field({ label, value }: { label: string; value: any }) {
           <span className="text-gray-400 text-[15px]">광고주 확인 필요</span>
         ) : Array.isArray(value) ? (
           <div className="flex flex-wrap gap-1.5">
-            {value.map((v, i) => (
+            {value.map((v: any, i: number) => (
               <span
                 key={i}
                 className="inline-block px-3 py-1 bg-gray-50 text-gray-700 rounded-md text-sm"
@@ -416,15 +665,15 @@ function Field({ label, value }: { label: string; value: any }) {
           </div>
         ) : typeof value === "object" ? (
           <div className="space-y-2">
-            {Object.entries(value).map(
-              ([k, v]) =>
-                v && (
-                  <div key={k}>
-                    <strong className="text-gray-900 font-semibold">{k}</strong>{" "}
-                    <span>{String(v)}</span>
-                  </div>
-                )
-            )}
+            {Object.entries(value as Record<string, any>).map(([k, v]) => {
+              if (!v) return null
+              return (
+                <div key={k}>
+                  <strong className="text-gray-900 font-semibold">{k}</strong>{" "}
+                  <span>{String(v)}</span>
+                </div>
+              )
+            })}
           </div>
         ) : (
           <div className="whitespace-pre-wrap">{String(value)}</div>
@@ -488,21 +737,5 @@ function ConfBadge({ level }: { level?: string }) {
     >
       {text}
     </span>
-  )
-}
-
-// ─── Tab: 팩트북 (Phase 2 placeholder) ───────────────────
-
-function FactbookTab() {
-  return (
-    <div className="text-center py-24">
-      <div className="text-3xl mb-4 opacity-40">📊</div>
-      <div className="text-lg font-bold text-gray-900 mb-2">
-        팩트북은 다음 단계에서 추가됩니다
-      </div>
-      <p className="text-sm text-gray-500 max-w-md mx-auto leading-relaxed">
-        자사 · 경쟁사 · 시장 · 고객 4C 데이터를 자동 수집하고 시각화합니다.
-      </p>
-    </div>
   )
 }
