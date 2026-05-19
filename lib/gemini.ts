@@ -1,8 +1,11 @@
 // Gemini API 클라이언트 — 서버 측에서만 사용 (API 키 보호)
+// 503/429 등 일시적 에러는 자동 재시도, 모델 fallback 지원
 
 import { GoogleGenerativeAI } from "@google/generative-ai"
 
-const MODEL_NAME = "gemini-2.5-flash-lite"
+const PRIMARY_MODEL = "gemini-2.5-flash-lite"
+const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-flash-latest"]
+const RETRY_DELAYS_MS = [1500, 3500, 7000]
 
 function getClient(): GoogleGenerativeAI {
   const apiKey = process.env.GEMINI_API_KEY
@@ -12,14 +15,33 @@ function getClient(): GoogleGenerativeAI {
   return new GoogleGenerativeAI(apiKey)
 }
 
-export async function generateJson(
+function isRetryableError(e: any): boolean {
+  const msg = String(e?.message || "").toLowerCase()
+  return (
+    msg.includes("503") ||
+    msg.includes("overloaded") ||
+    msg.includes("high demand") ||
+    msg.includes("unavailable") ||
+    msg.includes("rate limit") ||
+    msg.includes("429") ||
+    msg.includes("internal error") ||
+    msg.includes("deadline")
+  )
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function callOnce(
+  modelName: string,
   systemInstruction: string,
   userText: string,
-  options: { temperature?: number; maxOutputTokens?: number } = {}
+  options: { temperature?: number; maxOutputTokens?: number }
 ): Promise<any> {
   const client = getClient()
   const model = client.getGenerativeModel({
-    model: MODEL_NAME,
+    model: modelName,
     systemInstruction,
     generationConfig: {
       responseMimeType: "application/json",
@@ -30,8 +52,53 @@ export async function generateJson(
 
   const result = await model.generateContent(userText)
   const text = result.response.text()
-  const parsed = parseJsonResponse(text)
-  return ensureDict(parsed)
+  return ensureDict(parseJsonResponse(text))
+}
+
+export async function generateJson(
+  systemInstruction: string,
+  userText: string,
+  options: { temperature?: number; maxOutputTokens?: number } = {}
+): Promise<any> {
+  const models = [PRIMARY_MODEL, ...FALLBACK_MODELS]
+  let lastError: any = null
+
+  for (let mIdx = 0; mIdx < models.length; mIdx++) {
+    const modelName = models[mIdx]
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        return await callOnce(modelName, systemInstruction, userText, options)
+      } catch (e: any) {
+        lastError = e
+        const retryable = isRetryableError(e)
+
+        if (!retryable) {
+          // 재시도 불가 에러 (잘못된 키, JSON 파싱 등) — 즉시 throw
+          throw e
+        }
+
+        // 같은 모델에서 재시도 가능하면 대기 후 재시도
+        if (attempt < RETRY_DELAYS_MS.length) {
+          console.log(
+            `[Gemini retry] model=${modelName} attempt=${attempt + 1} delay=${RETRY_DELAYS_MS[attempt]}ms`
+          )
+          await sleep(RETRY_DELAYS_MS[attempt])
+          continue
+        }
+
+        // 모든 재시도 실패 — 다음 fallback 모델로
+        console.log(`[Gemini fallback] ${modelName} 실패, 다음 모델로 전환`)
+        break
+      }
+    }
+  }
+
+  // 모든 모델/재시도 실패
+  throw new Error(
+    `Gemini API 요청에 실패했습니다. 잠시 후 다시 시도해주세요.\n원본 오류: ${
+      lastError?.message || lastError
+    }`
+  )
 }
 
 function parseJsonResponse(text: string): any {
